@@ -1,0 +1,63 @@
+- hosts: all
+  gather_facts: yes
+  become: true
+  vars:
+    rabbitmq_host: "172.20.0.4"
+    memcache_host: "172.20.0.4"
+    mariadb_host: "172.20.0.4"
+    controller_host: "172.20.0.4"
+    linux_user_name: "hiroyuki"
+
+  pre_tasks:
+    - name: 'Install python2'
+      raw: apt-get -y install python-simplejson
+      register: apt_python
+      changed_when: apt_python.stdout.find('0 newly installed') == -1
+
+    - name: 'Install aptitude'
+      raw: apt-get -y install aptitude
+      register: apt_aptitude
+      changed_when: apt_aptitude.stdout.find('0 newly installed') == -1
+
+  tasks:
+
+    #
+    # Horizon
+    #
+
+    - name: 'Install apt packages'
+      apt: pkg={{ item }} state=present update_cache=yes
+      with_items:
+        - openstack-dashboard
+
+    - name: Check that the somefile.conf exists
+      stat: path=/etc/openstack-dashboard/local_settings.py
+      register: stat_result4
+
+    - name: Create the file, if it doesnt exist already
+      shell: cp /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py.org
+      when: stat_result4.stat.exists == False
+
+    #- name: Create neutron.conf
+    #  file: path=/etc/openstack-dashboard/local_settings.py state=touch owner="root" group="neutron" mode="u=rw,g=r,o=r"
+
+    - name: Create neutron.conf
+      template: >
+        src=local_settings.j2 
+        dest=/etc/openstack-dashboard/local_settings.py
+        owner=root
+        group=horizon
+        mode=0644
+
+    - name: reload services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      with_items:
+        - apache2
+
+    - name: Restart RabbitMQ Server
+      docker_container:
+        name:  rabbitmq_server
+        restart: yes
+

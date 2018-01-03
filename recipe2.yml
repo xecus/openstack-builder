@@ -1,0 +1,347 @@
+- hosts: all
+  gather_facts: yes
+  become: true
+  vars:
+    rabbitmq_host: "172.20.0.6"
+    memcache_host: "172.20.0.6"
+    mariadb_host: "172.20.0.6"
+    controller_host: "172.20.0.6"
+    linux_user_name: "hiroyuki"
+
+  pre_tasks:
+    - name: 'Install python2'
+      raw: apt-get -y install python-simplejson
+      register: apt_python
+      changed_when: apt_python.stdout.find('0 newly installed') == -1
+
+    - name: 'Install aptitude'
+      raw: apt-get -y install aptitude
+      register: apt_aptitude
+      changed_when: apt_aptitude.stdout.find('0 newly installed') == -1
+
+  tasks:
+
+    - name: Add Repository
+      shell: apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 5EDB1B62EC4926EA
+
+    - name: Add Repository
+      apt_repository:
+        repo: deb http://ubuntu-cloud.archive.canonical.com/ubuntu xenial-updates/pike main
+        state: present
+
+    - name: Run the equivalent of "apt-get update" as a separate step
+      apt:
+        update_cache: yes
+
+    #- name: Upgrade all packages to the latest version
+    #  apt:
+    #    name: "*"
+    #    state: latest
+
+
+    #
+    # Keystone
+    #
+
+    - name: create a file
+      copy:
+        dest: /etc/init/keystone.override 
+        content: manual
+
+    - name: 'Install apt packages'
+      apt: pkg={{ item }} state=present update_cache=yes
+      with_items:
+        - keystone
+        - python-openstackclient
+        - apache2
+        - libapache2-mod-wsgi
+        - python-oauth2client
+
+    - name: change setting in keystone
+      replace: >-
+        dest="/etc/keystone/keystone.conf"
+        regexp="#memcache_servers = localhost:11211"
+        replace="memcache_servers = {{ memcache_host }}:11212"
+
+    - name: change setting in keystone
+      replace: >-
+        dest="/etc/keystone/keystone.conf"
+        regexp="connection = sqlite:////var/lib/keystone/keystone.db"
+        replace="connection = mysql+pymysql://keystone:password@{{ mariadb_host }}/keystone"
+
+    - name: create a file
+      lineinfile:
+        dest: /etc/keystone/keystone.conf
+        line: "provider = fernet\ndriver = memcache"
+        insertafter: '^\[token\]'
+        state: present
+
+    - name: db_sync
+      become_user: keystone
+      shell: keystone-manage db_sync
+
+
+    - name: init key
+      shell: "{{ item }}"
+      with_items:
+        - "keystone-manage fernet_setup --keystone-user keystone --keystone-group keystone"
+        - "keystone-manage credential_setup --keystone-user keystone --keystone-group keystone"
+        - "keystone-manage bootstrap --bootstrap-password adminpassword --bootstrap-admin-url http://{{ controller_host }}:35357/v3/ --bootstrap-internal-url http://{{ controller_host }}:5000/v3/ --bootstrap-public-url http://{{ controller_host }}:5000/v3/ --bootstrap-region-id RegionOne"
+
+    - name: remove wasted db file
+      file: path=/var/lib/keystone/keystone.db state=absent
+
+    - name: reload service apache2
+      systemd:
+        name: apache2
+        state: restarted
+
+    - name: Create project, user, role, service, endpoints
+      shell: "{{ item }}"
+      ignore_errors: yes
+      with_items:
+        - 'openstack project create --domain default --description "Service Project" service'
+        - 'openstack user create --domain default --project service --password servicepassword glance'
+        - 'openstack role add --project service --user glance admin'
+        - 'openstack service create --name glance --description "OpenStack Image service" image'
+        - 'openstack endpoint create --region RegionOne image public http://{{ controller_host }}:9292'
+        - 'openstack endpoint create --region RegionOne image internal http://{{ controller_host }}:9292'
+        - 'openstack endpoint create --region RegionOne image admin http://{{ controller_host }}:9292'
+      environment:
+        OS_PROJECT_DOMAIN_NAME: default
+        OS_USER_DOMAIN_NAME: default
+        OS_PROJECT_NAME: admin
+        OS_USERNAME: admin
+        OS_PASSWORD: adminpassword
+        OS_AUTH_URL: "http://{{ controller_host }}:35357/v3"
+        OS_IDENTITY_API_VERSION: 3
+        OS_IMAGE_API_VERSION: 2
+
+    #
+    # Glance
+    #
+
+    - name: 'Install apt packages'
+      apt: pkg={{ item }} state=present update_cache=yes
+      with_items:
+        - glance
+
+    - name: Check that the somefile.conf exists
+      stat: path=/etc/glance/glance-api.conf.org
+      register: stat_result
+
+    - name: Create the file, if it doesnt exist already
+      shell: mv /etc/glance/glance-api.conf /etc/glance/glance-api.conf.org 
+      when: stat_result.stat.exists == False 
+
+    - name: Create glance-api.conf
+      file: path=/etc/glance/glance-api.conf state=touch owner="root" group="glance" mode="u=rw,g=r,o=r"
+
+    - name: Create glance-api.conf
+      blockinfile:
+        dest: /etc/glance/glance-api.conf
+        block: |
+          [DEFAULT]
+          bind_host = 0.0.0.0
+          
+          [glance_store]
+          default_store = file
+          filesystem_store_datadir = /var/lib/glance/images/
+          
+          [database]
+          connection = mysql+pymysql://glance:password@{{ mariadb_host }}/glance
+          
+          [keystone_authtoken]
+          auth_uri = http://{{ controller_host }}:5000
+          auth_url = http://{{ controller_host }}:35357
+          memcached_servers = {{ controller_host }}:11212
+          auth_type = password
+          project_domain_name = default
+          user_domain_name = default
+          project_name = service
+          username = glance
+          password = servicepassword
+          
+          [paste_deploy]
+          flavor = keystone
+              
+    - name: db_sync
+      become_user: glance
+      shell: glance-manage db_sync
+
+    - name: reload service glance
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      with_items:
+        - glance-api
+        - glance-registry
+
+    - name: Create project, user, role, service, endpoints
+      shell: "{{ item }}"
+      ignore_errors: yes
+      with_items:
+        - openstack user create --domain default --project service --password servicepassword nova
+        - openstack user create --domain default --project service --password servicepassword placement
+        - openstack role add --project service --user nova admin
+        - openstack role add --project service --user placement admin
+        - openstack service create --name nova --description "OpenStack Compute service" compute
+        - openstack service create --name placement --description "OpenStack Compute Placement service" placement
+        - "openstack endpoint create --region RegionOne compute public http://{{ controller_host }}:8774/v2.1/%\\(tenant_id\\)s"
+        - "openstack endpoint create --region RegionOne compute internal http://{{ controller_host }}:8774/v2.1/%\\(tenant_id\\)s"
+        - "openstack endpoint create --region RegionOne compute admin http://{{ controller_host }}:8774/v2.1/%\\(tenant_id\\)s"
+        - "openstack endpoint create --region RegionOne placement public http://{{ controller_host }}:8778"
+        - "openstack endpoint create --region RegionOne placement internal http://{{ controller_host }}:8778"
+        - "openstack endpoint create --region RegionOne placement admin http://{{ controller_host }}:8778"
+      environment:
+        OS_PROJECT_DOMAIN_NAME: default
+        OS_USER_DOMAIN_NAME: default
+        OS_PROJECT_NAME: admin
+        OS_USERNAME: admin
+        OS_PASSWORD: adminpassword
+        OS_AUTH_URL: "http://{{ controller_host }}:35357/v3"
+        OS_IDENTITY_API_VERSION: 3
+        OS_IMAGE_API_VERSION: 2
+
+    #
+    # Nova
+    #
+
+    - name: 'Install apt packages'
+      apt: pkg={{ item }} state=present update_cache=yes
+      with_items:
+        - nova-api
+        - nova-placement-api
+        - nova-conductor
+        - nova-consoleauth
+        - nova-scheduler
+        - nova-novncproxy
+        - python-novaclient
+
+    - name: Check that the somefile.conf exists
+      stat: path=/etc/nova/nova.conf.org
+      register: stat_result2
+
+    - name: Create the file, if it doesnt exist already
+      shell: mv /etc/nova/nova.conf /etc/nova/nova.conf.org
+      when: stat_result2.stat.exists == False 
+
+    - name: Create nova.conf
+      file: path=/etc/nova/nova.conf state=touch owner="nova" group="nova" mode="u=rw,g=r,o=r"
+
+    - name: Create nova.conf
+      blockinfile:
+        dest: /etc/nova/nova.conf
+        block: |
+          [DEFAULT]
+          my_ip = {{ ansible_default_ipv4.address }}
+          state_path = /var/lib/nova
+          enabled_apis = osapi_compute,metadata
+          log_dir = /var/log/nova
+          transport_url = rabbit://openstack:password@{{ rabbitmq_host }}
+          
+          [api]
+          auth_strategy = keystone
+          
+          [glance]
+          api_servers = http://{{ controller_host }}:9292
+          
+          [oslo_concurrency]
+          lock_path = $state_path/tmp
+          
+          [api_database]
+          connection = mysql+pymysql://nova:password@{{ mariadb_host }}/nova_api
+          
+          [database]
+          connection = mysql+pymysql://nova:password@{{ mariadb_host }}/nova
+          
+          [keystone_authtoken]
+          auth_uri = http://{{ controller_host }}:5000
+          auth_url = http://{{ controller_host }}:35357
+          memcached_servers = {{ memcache_host }}:11212
+          auth_type = password
+          project_domain_name = default
+          user_domain_name = default
+          project_name = service
+          username = nova
+          password = servicepassword
+          
+          [placement]
+          auth_url = http://{{ controller_host }}:35357
+          os_region_name = RegionOne
+          auth_type = password
+          project_domain_name = default
+          user_domain_name = default
+          project_name = service
+          username = placement
+          password = servicepassword
+          
+          [placement_database]
+          connection = mysql+pymysql://nova:password@{{ mariadb_host }}/nova_placement
+          
+          [wsgi]
+          api_paste_config = /etc/nova/api-paste.ini
+
+    - name: db_sync
+      become_user: nova
+      shell: "{{ item }}"
+      ignore_errors: yes
+      with_items:
+        - "nova-manage api_db sync"
+        - "nova-manage cell_v2 map_cell0 --database_connection mysql+pymysql://nova:password@{{ mariadb_host }}/nova_cell0"
+        - "nova-manage db sync"
+        - "nova-manage cell_v2 create_cell --name cell1 --database_connection mysql+pymysql://nova:password@{{ mariadb_host }}/nova --transport-url rabbit://openstack:password@{{ rabbitmq_host }}:5672"
+
+    - name: reload services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      with_items:
+        - apache2
+        - nova-api
+        - nova-conductor
+        - nova-scheduler
+        - nova-consoleauth
+        - nova-novncproxy
+
+    #
+    # Nova-compute
+    #
+
+    - name: 'Install apt packages'
+      apt: pkg={{ item }} state=present update_cache=yes
+      with_items:
+        - nova-compute-kvm
+
+    - name: reload services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      with_items:
+        - nova-compute
+
+    - name: db_sync
+      become_user: nova
+      shell: "{{ item }}"
+      ignore_errors: yes
+      with_items:
+        - "nova-manage cell_v2 discover_hosts"
+
+    #
+    # Nova Setting
+    #
+
+    - name: Create project, user, role, service, endpoints
+      shell: "{{ item }}"
+      ignore_errors: yes
+      with_items:
+        - "openstack flavor create --id 0 --vcpus 1 --ram 2048 --disk 10 m1.small"
+      environment:
+        OS_PROJECT_DOMAIN_NAME: default
+        OS_USER_DOMAIN_NAME: default
+        OS_PROJECT_NAME: admin
+        OS_USERNAME: admin
+        OS_PASSWORD: adminpassword
+        OS_AUTH_URL: "http://{{ controller_host }}:35357/v3"
+        OS_IDENTITY_API_VERSION: 3
+        OS_IMAGE_API_VERSION: 2

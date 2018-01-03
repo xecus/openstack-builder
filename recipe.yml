@@ -1,0 +1,152 @@
+- hosts: all
+  gather_facts: no
+  become: true
+  vars:
+    linux_user_name: "hiroyuki"
+
+  pre_tasks:
+    - name: 'Install python2'
+      raw: apt-get -y install python-simplejson
+      register: apt_python
+      changed_when: apt_python.stdout.find('0 newly installed') == -1
+
+    - name: 'Install aptitude'
+      raw: apt-get -y install aptitude
+      register: apt_aptitude
+      changed_when: apt_aptitude.stdout.find('0 newly installed') == -1
+
+  tasks:
+
+    - name: Upgrade apt packages
+      apt:
+        update_cache: yes
+        upgrade: full
+
+    - name: Install apt packages
+      apt: pkg={{ item }} state=present update_cache=yes
+      with_items:
+        - vim
+        - python-pip
+        - tmux
+        - docker.io
+        - docker-compose
+        - htop
+        - virtinst
+        - libguestfs-tools
+
+    - name: Add Repository
+      apt_repository:
+        repo: deb http://ubuntu-cloud.archive.canonical.com/ubuntu xenial-updates/pike main
+        state: present
+
+    - name: Upgrade apt packages
+      apt:
+        update_cache: yes
+
+    #- name: Upgrade all packages to the latest version
+    #  apt:
+    #    name: "*"
+    #    state: latest
+
+
+    - name: Add user to docker group
+      command: "usermod -aG docker {{ linux_user_name }}"
+
+    - name: RabbitMQ Server
+      docker_container:
+        name:  rabbitmq_server
+        image: 'rabbitmq:3.7.2-management-alpine'
+        ports:
+          - '5672:5672'
+          - '15672:15672'
+          - '25672:25672'
+        restart_policy: always
+        env:
+          RABBITMQ_DEFAULT_USER: admin
+          RABBITMQ_DEFAULT_PASS: password
+
+
+    - name: Wait for ready-state of RabbitMQ
+      shell: "docker exec rabbitmq_server {{ item }}"
+      become: yes
+      become_user: "{{ linux_user_name }}"
+      register: task_result1
+      until: task_result1.rc == 0
+      retries: 10
+      delay: 60
+      items:
+        - 'rabbitmqctl list_connections'
+
+    - name: Set permission RabbitMQ User
+      shell: "docker exec rabbitmq_server {{ item }}"
+      ignore_errors: True
+      become: yes
+      become_user: "{{ linux_user_name }}"
+      items:
+        - 'rabbitmqctl add_user openstack password'
+        - 'rabbitmqctl set_permissions openstack ".*" ".*" ".*"'
+
+    - name: Restart RabbitMQ Server
+      docker_container:
+        name:  rabbitmq_server
+        restart: yes
+
+    - name: Launch MariaDB Server
+      docker_container:
+        name:  mariadb_server
+        image: 'mariadb:10.1'
+        ports:
+          - '3306:3306'
+        restart_policy: always
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        command: --character-set-server=utf8 --collation-server=utf8_unicode_ci
+
+    - name: Wait for ready-state of mariaDB
+      shell: docker exec mariadb_server mysql -hlocalhost -uroot -ppassword -e "{{ item }}"
+      become: yes
+      become_user: "{{ linux_user_name }}"
+      register: task_result2
+      until: task_result2.rc == 0
+      retries: 10
+      delay: 60
+      items:
+        - "show global status"
+
+    - name: Create database on MariaDB
+      shell: docker exec mariadb_server mysql -hlocalhost -uroot -ppassword -e "{{ item }}"
+      become: yes
+      become_user: "{{ linux_user_name }}"
+      ignore_errors: True
+      items:
+        - "create database keystone"
+        - "create database glance"
+        - "create database nova"
+        - "create database nova_api"
+        - "create database nova_placement"
+        - "create database nova_cell0"
+        - "create database neutron_ml2"
+        - "grant all privileges on keystone.* to keystone@'localhost' identified by 'password'"
+        - "grant all privileges on keystone.* to keystone@'%' identified by 'password';"
+        - "grant all privileges on glance.* to glance@'localhost' identified by 'password'"
+        - "grant all privileges on glance.* to glance@'%' identified by 'password'"
+        - "grant all privileges on nova.* to nova@'localhost' identified by 'password'"
+        - "grant all privileges on nova.* to nova@'%' identified by 'password'"
+        - "grant all privileges on nova_api.* to nova@'localhost' identified by 'password'"
+        - "grant all privileges on nova_api.* to nova@'%' identified by 'password'"
+        - "grant all privileges on nova_placement.* to nova@'localhost' identified by 'password'"
+        - "grant all privileges on nova_placement.* to nova@'%' identified by 'password'"
+        - "grant all privileges on nova_cell0.* to nova@'localhost' identified by 'password'"
+        - "grant all privileges on nova_cell0.* to nova@'%' identified by 'password'"
+        - "grant all privileges on neutron_ml2.* to neutron@'localhost' identified by 'password'"
+        - "grant all privileges on neutron_ml2.* to neutron@'%' identified by 'password'"
+        - "flush privileges"
+
+    - name: Memchached Server
+      docker_container:
+        name:  memcached_server
+        image: 'memcached:1.5.4'
+        ports:
+          - '11212:11211'
+        restart_policy: always
+
