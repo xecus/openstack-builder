@@ -1,5 +1,5 @@
 - hosts: all
-  gather_facts: no
+  gather_facts: yes
   become: true
   vars:
     linux_user_name: "hiroyuki"
@@ -42,6 +42,7 @@
         - docker.io
         - docker-compose
         - htop
+        - python-mysqldb
         #- virtinst
         #- libguestfs-tools
 
@@ -151,6 +152,15 @@
         - "grant all privileges on neutron_ml2.* to neutron@'localhost' identified by 'password'"
         - "grant all privileges on neutron_ml2.* to neutron@'%' identified by 'password'"
         - "flush privileges"
+
+    - name: Set num of max_connection
+      mysql_variables:
+        login_host: "{{ ansible_default_ipv4.address }}"
+        login_user: root
+        login_password: password
+        login_port: 3306
+        variable: max_connections
+        value: 1000
 
     - name: Memchached Server
       docker_container:
