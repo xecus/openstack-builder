@@ -91,6 +91,9 @@
     - name: remove wasted db file
       file: path=/var/lib/keystone/keystone.db state=absent
 
+    - name: Update cryptography
+      shell: pip install cryptography --upgrade
+
     - name: reload service apache2
       systemd:
         name: apache2
@@ -321,7 +324,7 @@
         - nova-compute
 
     - name: db_sync
-      become_user: nova
+      #become_user: nova
       shell: "{{ item }}"
       ignore_errors: yes
       with_items:

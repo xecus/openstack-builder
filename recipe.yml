@@ -17,10 +17,10 @@
 
   tasks:
 
-    - name: Upgrade apt packages
-      apt:
-        update_cache: yes
-        upgrade: full
+    #- name: Upgrade apt packages
+    #  apt:
+    #    update_cache: yes
+    #    upgrade: full
 
     - name: Install apt packages
       apt: pkg={{ item }} state=present update_cache=yes
@@ -31,8 +31,8 @@
         - docker.io
         - docker-compose
         - htop
-        - virtinst
-        - libguestfs-tools
+        #- virtinst
+        #- libguestfs-tools
 
     - name: Add Repository
       apt_repository:
@@ -47,7 +47,6 @@
     #  apt:
     #    name: "*"
     #    state: latest
-
 
     - name: Add user to docker group
       command: "usermod -aG docker {{ linux_user_name }}"

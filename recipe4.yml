@@ -2,10 +2,10 @@
   gather_facts: yes
   become: true
   vars:
-    rabbitmq_host: "172.20.0.4"
-    memcache_host: "172.20.0.4"
-    mariadb_host: "172.20.0.4"
-    controller_host: "172.20.0.4"
+    rabbitmq_host: "172.20.0.6"
+    memcache_host: "172.20.0.6"
+    mariadb_host: "172.20.0.6"
+    controller_host: "172.20.0.6"
     linux_user_name: "hiroyuki"
 
   pre_tasks:
@@ -25,7 +25,7 @@
     # Horizon
     #
 
-    - name: 'Install apt packages'
+    - name: Install apt packages
       apt: pkg={{ item }} state=present update_cache=yes
       with_items:
         - openstack-dashboard
@@ -37,9 +37,6 @@
     - name: Create the file, if it doesnt exist already
       shell: cp /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py.org
       when: stat_result4.stat.exists == False
-
-    #- name: Create neutron.conf
-    #  file: path=/etc/openstack-dashboard/local_settings.py state=touch owner="root" group="neutron" mode="u=rw,g=r,o=r"
 
     - name: Create neutron.conf
       template: >
