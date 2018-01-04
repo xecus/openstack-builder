@@ -323,13 +323,6 @@
       with_items:
         - nova-compute
 
-    - name: db_sync
-      #become_user: nova
-      shell: "{{ item }}"
-      ignore_errors: yes
-      with_items:
-        - "nova-manage cell_v2 discover_hosts"
-
     #
     # Nova Setting
     #
@@ -338,7 +331,10 @@
       shell: "{{ item }}"
       ignore_errors: yes
       with_items:
+        - "nova-manage cell_v2 discover_hosts"
         - "openstack flavor create --id 0 --vcpus 1 --ram 2048 --disk 10 m1.small"
+        - "wget http://cloud-images.ubuntu.com/releases/16.04/release/ubuntu-16.04-server-cloudimg-amd64-disk1.img -P /var/kvm/images"
+        - "openstack image create Ubuntu1604 --file /var/kvm/images/ubuntu-16.04-server-cloudimg-amd64-disk1.img --disk-format qcow2 --container-format bare --public"
       environment:
         OS_PROJECT_DOMAIN_NAME: default
         OS_USER_DOMAIN_NAME: default
