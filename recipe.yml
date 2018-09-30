@@ -2,7 +2,7 @@
   gather_facts: yes
   become: true
   vars:
-    linux_user_name: "hiroyuki"
+    linux_user_name: "ubuntu"
 
   pre_tasks:
     - name: 'Install python2'
@@ -18,25 +18,29 @@
   tasks:
 
     - name: Disable IPv6
-      lineinfile:
-        dest=/etc/sysctl.conf
-        line={{ item }}
-      with_items:
-        - "net.ipv6.conf.all.disable_ipv6 = 1"
-        - "net.ipv6.conf.default.disable_ipv6 = 1"
+      blockinfile:
+        dest: /etc/sysctl.conf
+        block: |
+          net.ipv6.conf.all.disable_ipv6 = 1
+          net.ipv6.conf.default.disable_ipv6 = 1
+        state: present
 
     - name: Disable IPv6
       shell: sysctl -p
 
-    #- name: Upgrade apt packages
-    #  apt:
-    #    update_cache: yes
-    #    upgrade: full
+    - name: Upgrade apt packages
+      apt:
+        update_cache: yes
+        upgrade: full
+      register: apt_res1
+      retries: 5
+      until: apt_res1 | success
 
     - name: Install apt packages
       apt: pkg={{ item }} state=present update_cache=yes
       with_items:
         - vim
+        - python3-pip
         - python-pip
         - tmux
         - docker.io
@@ -45,6 +49,12 @@
         - python-mysqldb
         #- virtinst
         #- libguestfs-tools
+      register: apt_res2
+      retries: 5
+      until: apt_res2 | success
+
+    - name: Add docker by pip3
+      command: "pip3 install docker==3.5.0"
 
     - name: Add Repository
       apt_repository:
@@ -78,22 +88,20 @@
 
 
     - name: Wait for ready-state of RabbitMQ
-      shell: "docker exec rabbitmq_server {{ item }}"
+      shell: "docker exec rabbitmq_server rabbitmqctl list_connections"
       become: yes
       become_user: "{{ linux_user_name }}"
       register: task_result1
       until: task_result1.rc == 0
       retries: 10
       delay: 60
-      items:
-        - 'rabbitmqctl list_connections'
 
     - name: Set permission RabbitMQ User
       shell: "docker exec rabbitmq_server {{ item }}"
       ignore_errors: True
       become: yes
       become_user: "{{ linux_user_name }}"
-      items:
+      with_items:
         - 'rabbitmqctl add_user openstack password'
         - 'rabbitmqctl set_permissions openstack ".*" ".*" ".*"'
 
@@ -114,22 +122,20 @@
         command: --character-set-server=utf8 --collation-server=utf8_unicode_ci
 
     - name: Wait for ready-state of mariaDB
-      shell: docker exec mariadb_server mysql -hlocalhost -uroot -ppassword -e "{{ item }}"
+      shell: docker exec mariadb_server mysql -hlocalhost -uroot -ppassword -e 'show global status'
       become: yes
       become_user: "{{ linux_user_name }}"
       register: task_result2
       until: task_result2.rc == 0
       retries: 10
       delay: 60
-      items:
-        - "show global status"
 
     - name: Create database on MariaDB
       shell: docker exec mariadb_server mysql -hlocalhost -uroot -ppassword -e "{{ item }}"
       become: yes
       become_user: "{{ linux_user_name }}"
       ignore_errors: True
-      items:
+      with_items:
         - "create database keystone"
         - "create database glance"
         - "create database nova"
@@ -152,15 +158,7 @@
         - "grant all privileges on neutron_ml2.* to neutron@'localhost' identified by 'password'"
         - "grant all privileges on neutron_ml2.* to neutron@'%' identified by 'password'"
         - "flush privileges"
-
-    - name: Set num of max_connection
-      mysql_variables:
-        login_host: "{{ ansible_default_ipv4.address }}"
-        login_user: root
-        login_password: password
-        login_port: 3306
-        variable: max_connections
-        value: 1000
+        - "set global max_connections=1000"
 
     - name: Memchached Server
       docker_container:

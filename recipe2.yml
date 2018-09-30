@@ -2,11 +2,11 @@
   gather_facts: yes
   become: true
   vars:
-    rabbitmq_host: "172.20.0.6"
-    memcache_host: "172.20.0.6"
-    mariadb_host: "172.20.0.6"
-    controller_host: "172.20.0.6"
-    linux_user_name: "hiroyuki"
+    rabbitmq_host: "192.168.0.11"
+    memcache_host: "192.168.0.11"
+    mariadb_host: "192.168.0.11"
+    controller_host: "192.168.0.11"
+    linux_user_name: "ubuntu"
 
   pre_tasks:
     - name: 'Install python2'
@@ -33,12 +33,6 @@
       apt:
         update_cache: yes
 
-    #- name: Upgrade all packages to the latest version
-    #  apt:
-    #    name: "*"
-    #    state: latest
-
-
     #
     # Keystone
     #
@@ -56,6 +50,9 @@
         - apache2
         - libapache2-mod-wsgi
         - python-oauth2client
+      register: apt_res1
+      retries: 5
+      until: apt_res1 | success
 
     - name: change setting in keystone
       replace: >-
@@ -69,17 +66,25 @@
         regexp="connection = sqlite:////var/lib/keystone/keystone.db"
         replace="connection = mysql+pymysql://keystone:password@{{ mariadb_host }}/keystone"
 
+    #- name: create a file
+    #  lineinfile:
+    #    dest: /etc/keystone/keystone.conf
+    #    line: "provider = fernet\ndriver = memcache"
+    #    insertafter: '^\[token\]'
+    #    state: presenta
+
     - name: create a file
-      lineinfile:
+      blockinfile:
         dest: /etc/keystone/keystone.conf
-        line: "provider = fernet\ndriver = memcache"
+        block: |
+          provider = fernet
+          driver = memcache
         insertafter: '^\[token\]'
         state: present
 
     - name: db_sync
       become_user: keystone
       shell: keystone-manage db_sync
-
 
     - name: init key
       shell: "{{ item }}"
@@ -128,6 +133,9 @@
       apt: pkg={{ item }} state=present update_cache=yes
       with_items:
         - glance
+      register: apt_res2
+      retries: 5
+      until: apt_res2 | success
 
     - name: Check that the somefile.conf exists
       stat: path=/etc/glance/glance-api.conf.org
@@ -167,7 +175,42 @@
           
           [paste_deploy]
           flavor = keystone
-              
+
+    - name: Check that the somefile.conf exists
+      stat: path=/etc/glance/glance-registry.conf.org
+      register: stat_result_grance_registry
+
+    - name: Create the file, if it doesnt exist already
+      shell: mv /etc/glance/glance-registry.conf /etc/glance/glance-registry.conf.org
+      when: stat_result_grance_registry.stat.exists == False
+
+    - name: Create glance-registry.conf
+      file: path=/etc/glance/glance-registry.conf state=touch owner="root" group="glance" mode="u=rw,g=r,o=r"
+
+    - name: Create glance-registry.conf
+      blockinfile:
+        dest: /etc/glance/glance-registry.conf
+        block: |
+          [DEFAULT]
+          bind_host = 0.0.0.0
+
+          [database]
+          connection = mysql+pymysql://glance:password@{{ controller_host }}/glance
+
+          [keystone_authtoken]
+          auth_uri = http://{{ controller_host }}:5000
+          auth_url = http://{{ controller_host }}:35357
+          memcached_servers = {{ controller_host }}:11211
+          auth_type = password
+          project_domain_name = default
+          user_domain_name = default
+          project_name = service
+          username = glance
+          password = servicepassword
+
+          [paste_deploy]
+          flavor = keystone
+
     - name: db_sync
       become_user: glance
       shell: glance-manage db_sync
@@ -220,6 +263,9 @@
         - nova-scheduler
         - nova-novncproxy
         - python-novaclient
+      register: apt_res3
+      retries: 5
+      until: apt_res3 | success
 
     - name: Check that the somefile.conf exists
       stat: path=/etc/nova/nova.conf.org
@@ -315,6 +361,14 @@
       apt: pkg={{ item }} state=present update_cache=yes
       with_items:
         - nova-compute-kvm
+        - nova-compute
+        - qemu-kvm
+        - libvirt-bin
+        - virtinst
+        - bridge-utils
+      register: apt_res4
+      retries: 5
+      until: apt_res4 | success
 
     - name: reload services
       systemd:
@@ -331,10 +385,10 @@
       shell: "{{ item }}"
       ignore_errors: yes
       with_items:
-        - "nova-manage cell_v2 discover_hosts"
-        - "openstack flavor create --id 0 --vcpus 1 --ram 2048 --disk 10 m1.small"
         - "wget http://cloud-images.ubuntu.com/releases/16.04/release/ubuntu-16.04-server-cloudimg-amd64-disk1.img -P /var/kvm/images"
         - "openstack image create Ubuntu1604 --file /var/kvm/images/ubuntu-16.04-server-cloudimg-amd64-disk1.img --disk-format qcow2 --container-format bare --public"
+        - "nova-manage cell_v2 discover_hosts"
+        - "openstack flavor create --id 0 --vcpus 1 --ram 2048 --disk 10 m1.small"
       environment:
         OS_PROJECT_DOMAIN_NAME: default
         OS_USER_DOMAIN_NAME: default

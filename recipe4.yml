@@ -2,11 +2,11 @@
   gather_facts: yes
   become: true
   vars:
-    rabbitmq_host: "172.20.0.6"
-    memcache_host: "172.20.0.6"
-    mariadb_host: "172.20.0.6"
-    controller_host: "172.20.0.6"
-    linux_user_name: "hiroyuki"
+    rabbitmq_host: "192.168.0.11"
+    memcache_host: "192.168.0.11"
+    mariadb_host: "192.168.0.11"
+    controller_host: "192.168.0.11"
+    linux_user_name: "ubuntu"
 
   pre_tasks:
     - name: 'Install python2'
@@ -29,6 +29,9 @@
       apt: pkg={{ item }} state=present update_cache=yes
       with_items:
         - openstack-dashboard
+      register: apt_res1
+      retries: 5
+      until: apt_res1 | success
 
     - name: Check that the somefile.conf exists
       stat: path=/etc/openstack-dashboard/local_settings.py
@@ -38,7 +41,7 @@
       shell: cp /etc/openstack-dashboard/local_settings.py /etc/openstack-dashboard/local_settings.py.org
       when: stat_result4.stat.exists == False
 
-    - name: Create neutron.conf
+    - name: Create dashboard config
       template: >
         src=local_settings.j2 
         dest=/etc/openstack-dashboard/local_settings.py
